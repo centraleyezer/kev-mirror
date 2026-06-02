@@ -1,0 +1,64 @@
+# .github/workflows/refresh.yml
+#
+# COPY THIS FILE into a separate public repo at centraleyezer/kev-mirror
+# (NOT into the rule-platform repo). See deploy/kev-mirror/README.md for
+# setup steps.
+#
+# Akamai (CISA's CDN) IP-blocks our Portainer host (Hetzner) so the
+# ingest worker gets 403s. GitHub-hosted runners run on Azure IPs that
+# aren't blocked, so they can pull the CSV reliably. We mirror it to a
+# public GitHub repo and the platform fetches via raw.githubusercontent.com.
+
+name: refresh-cisa-kev
+
+on:
+  schedule:
+    # Daily at 02:00 UTC — one hour before the platform's daily ingest
+    # tick (03:00 UTC, see internal/source/cisakev/kev.go).
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}  # manual trigger button in GitHub UI
+
+permissions:
+  contents: write  # needed to commit the refreshed CSV
+
+concurrency:
+  group: refresh-cisa-kev
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download CISA KEV CSV
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+          curl -fsSL --max-time 60 \
+            -A "$UA" \
+            -H 'Accept: text/csv,text/plain;q=0.9,*/*;q=0.8' \
+            -H 'Accept-Language: en-US,en;q=0.9' \
+            -o known_exploited_vulnerabilities.csv \
+            https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv
+          # Sanity: CSV must start with the expected header
+          head -1 known_exploited_vulnerabilities.csv | grep -q '^cveID,'
+          ROWS=$(($(wc -l < known_exploited_vulnerabilities.csv) - 1))
+          # CISA KEV has had >1000 entries since early 2024
+          test "$ROWS" -gt 1000 || (echo "Only $ROWS rows — refusing to commit." && exit 1)
+          echo "Fetched $ROWS entries."
+
+      - name: Commit if changed
+        run: |
+          set -euo pipefail
+          git config user.name  "kev-mirror-bot"
+          git config user.email "kev-mirror-bot@users.noreply.github.com"
+          if git diff --quiet known_exploited_vulnerabilities.csv; then
+            echo "No change; skipping commit."
+            exit 0
+          fi
+          ROWS=$(($(wc -l < known_exploited_vulnerabilities.csv) - 1))
+          git add known_exploited_vulnerabilities.csv
+          git commit -m "kev: refresh from CISA ($ROWS entries)"
+          git push
