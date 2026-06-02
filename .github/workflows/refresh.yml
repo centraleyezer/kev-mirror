@@ -54,11 +54,14 @@ jobs:
           set -euo pipefail
           git config user.name  "kev-mirror-bot"
           git config user.email "kev-mirror-bot@users.noreply.github.com"
-          if git diff --quiet known_exploited_vulnerabilities.csv; then
+          # Stage first so we can detect both new + modified states.
+          # `git diff --quiet` against an untracked file misleadingly
+          # reports "no diff" (it only sees tracked content).
+          git add known_exploited_vulnerabilities.csv
+          if git diff --cached --quiet; then
             echo "No change; skipping commit."
             exit 0
           fi
           ROWS=$(($(wc -l < known_exploited_vulnerabilities.csv) - 1))
-          git add known_exploited_vulnerabilities.csv
           git commit -m "kev: refresh from CISA ($ROWS entries)"
           git push
